@@ -108,13 +108,17 @@ func NewPRChecker() (*PRChecker, error) {
 
 // Run executes the main PR checking logic with concurrent requests
 func (pc *PRChecker) Run() error {
+	// Define order of PR categories to ensure consistent display
+	prCategories := []string{categoryCreated, categoryReviewer}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	results := make(chan AsyncPRResult, 2)
+	results := make(chan AsyncPRResult, len(prCategories))
 	var wg sync.WaitGroup
 
-	for _, category := range []string{categoryCreated, categoryReviewer} {
+	// Execute in defined order
+	for _, category := range prCategories {
 		wg.Add(1)
 		go func(cat string) {
 			defer wg.Done()
@@ -136,11 +140,19 @@ func (pc *PRChecker) Run() error {
 		close(results)
 	}()
 
+	// Map results by category
+	resultMap := make(map[string]AsyncPRResult)
 	for result := range results {
+		resultMap[result.Category] = result
+	}
+
+	// Display in defined order
+	for _, category := range prCategories {
+		result := resultMap[category]
 		if result.Error != nil {
-			return fmt.Errorf("error fetching %s PRs: %w", result.Category, result.Error)
+			return fmt.Errorf("error fetching %s PRs: %w", category, result.Error)
 		}
-		if err := pc.displayPullRequests(result.Issues, result.Category); err != nil {
+		if err := pc.displayPullRequests(result.Issues, category); err != nil {
 			return err
 		}
 	}
