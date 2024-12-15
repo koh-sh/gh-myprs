@@ -6,7 +6,7 @@ require (
 	github.com/cli/go-gh/v2 v2.11.1
 	github.com/fatih/color v1.18.0
 	github.com/google/go-github/v67 v67.0.0
-	github.com/mattn/go-runewidth v0.0.15
+	github.com/mattn/go-runewidth v0.0.16
 )
 
 require (
