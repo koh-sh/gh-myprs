@@ -1,0 +1,10 @@
+linters:
+  enable:
+    - asciicheck
+    - gci
+    - gocritic
+    - gofumpt
+    - misspell
+    - nolintlint
+    - predeclared
+    - unconvert
