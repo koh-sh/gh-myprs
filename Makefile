@@ -18,6 +18,7 @@ cov:
 	go test -cover ./... -coverprofile=$(COVFILE)
 	go tool cover -html=$(COVFILE) -o $(COVHTML)
 	rm $(COVFILE)
+	open $(COVHTML)
 
 tidy:
 	go mod tidy -v

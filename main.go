@@ -39,9 +39,14 @@ const (
 	requestedIcon = "👀"
 )
 
+// Define APIClient Interface
+type APIClient interface {
+	Get(path string, response interface{}) error
+}
+
 // PRChecker handles GitHub PR-related operations
 type PRChecker struct {
-	client  *api.RESTClient
+	client  APIClient
 	account string
 	display *DisplayFormatter
 }
@@ -95,7 +100,7 @@ func (pc *PRChecker) Run() error {
 	return nil
 }
 
-func createAPIClient() (*api.RESTClient, error) {
+func createAPIClient() (APIClient, error) {
 	opts := api.ClientOptions{
 		Headers: map[string]string{
 			"Accept":               githubAcceptHeader,
@@ -105,7 +110,7 @@ func createAPIClient() (*api.RESTClient, error) {
 	return api.NewRESTClient(opts)
 }
 
-func getAccountName(client *api.RESTClient) (string, error) {
+func getAccountName(client APIClient) (string, error) {
 	var user github.User
 	if err := client.Get("user", &user); err != nil {
 		return "", fmt.Errorf("failed to get user info: %w", err)
