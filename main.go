@@ -108,56 +108,56 @@ func NewPRChecker() (*PRChecker, error) {
 
 // Run executes the main PR checking logic with concurrent requests
 func (pc *PRChecker) Run() error {
-	// Define order of PR categories to ensure consistent display
-	prCategories := []string{categoryCreated, categoryReviewer}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	results := make(chan AsyncPRResult, len(prCategories))
+	categories := []string{categoryCreated, categoryReviewer}
+	errChan := make(chan error, len(categories))
 	var wg sync.WaitGroup
 
-	// Execute in defined order
-	for _, category := range prCategories {
+	resultMap := make(map[string][]*github.Issue)
+	mapMutex := sync.Mutex{}
+
+	for _, category := range categories {
 		wg.Add(1)
 		go func(cat string) {
 			defer wg.Done()
 			issues, err := pc.fetchPullRequests(ctx, cat)
+			if err != nil {
+				errChan <- fmt.Errorf("error fetching %s PRs: %w", cat, err)
+				return
+			}
+
 			var issuesList []*github.Issue
 			if issues != nil {
 				issuesList = issues.Issues
 			}
-			results <- AsyncPRResult{
-				Issues:   issuesList,
-				Category: cat,
-				Error:    err,
-			}
+
+			mapMutex.Lock()
+			resultMap[cat] = issuesList
+			mapMutex.Unlock()
 		}(category)
 	}
 
+	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		close(results)
+		close(done)
 	}()
 
-	// Map results by category
-	resultMap := make(map[string]AsyncPRResult)
-	for result := range results {
-		resultMap[result.Category] = result
-	}
-
-	// Display in defined order
-	for _, category := range prCategories {
-		result := resultMap[category]
-		if result.Error != nil {
-			return fmt.Errorf("error fetching %s PRs: %w", category, result.Error)
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		for _, cat := range categories {
+			if err := pc.displayPullRequests(resultMap[cat], cat); err != nil {
+				return err
+			}
 		}
-		if err := pc.displayPullRequests(result.Issues, category); err != nil {
-			return err
-		}
+		return nil
 	}
-
-	return nil
 }
 
 func initializeGitHubClient() (GitHubClient, error) {
