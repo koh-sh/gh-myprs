@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -13,152 +15,199 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// Constants for GitHub API
+// GitHub API configuration
 const (
 	githubAPIVersion   = "2022-11-28"
 	githubAcceptHeader = "application/vnd.github+json"
 )
 
-// Constants for PR types
+// Pull request categories
 const (
-	PRTypeCreated   = "created"
-	PRTypeRequested = "requested"
+	categoryCreated  = "created"   // PRs created by the user
+	categoryReviewer = "requested" // PRs where user is requested as reviewer
 )
 
-// Constants for display formatting
+// Display configuration
 const (
-	titleWidth    = 33
-	updatedWidth  = 17
-	columnSpacing = 2
-	lineWidth     = 80
+	maxTitleLength  = 33 // Maximum length for PR title display
+	maxUpdateLength = 17 // Maximum length for "updated at" timestamp
+	columnPadding   = 2  // Space between columns
+	displayWidth    = 80 // Total width of display
 )
 
-// Display related constants
+// Status icons
 const (
-	createdIcon   = "🔨"
-	requestedIcon = "👀"
+	iconCreated  = "🔨" // Icon for PRs created by user
+	iconReviewer = "👀" // Icon for PRs requiring review
 )
 
-// Define APIClient Interface
-type APIClient interface {
-	Get(path string, response interface{}) error
+// AsyncPRResult represents the result of an asynchronous PR fetch operation
+type AsyncPRResult struct {
+	Issues   []*github.Issue
+	Category string
+	Error    error
 }
 
-// PRChecker handles GitHub PR-related operations
+// GitHubClient defines the interface for GitHub API operations
+type GitHubClient interface {
+	Get(ctx context.Context, path string, response interface{}) error
+}
+
+// githubRESTClient implements GitHubClient using REST API
+type githubRESTClient struct {
+	client *api.RESTClient
+}
+
+func (c *githubRESTClient) Get(ctx context.Context, path string, response interface{}) error {
+	return c.client.Get(path, response)
+}
+
+// PRChecker manages GitHub pull request operations and display
 type PRChecker struct {
-	client  APIClient
-	account string
-	display *DisplayFormatter
+	client    GitHubClient
+	username  string
+	formatter *DisplayFormatter
 }
 
-// DisplayFormatter handles the formatting and display of PR information
+// DisplayFormatter handles the formatting of PR information
 type DisplayFormatter struct {
-	headerFmt *color.Color
-	titleFmt  *color.Color
-	urlFmt    *color.Color
-	timeFmt   *color.Color
+	headerStyle *color.Color
+	titleStyle  *color.Color
+	urlStyle    *color.Color
+	timeStyle   *color.Color
 }
 
-// NewDisplayFormatter creates a new DisplayFormatter with predefined styles
+// NewDisplayFormatter creates a DisplayFormatter with predefined styles
 func NewDisplayFormatter() *DisplayFormatter {
 	return &DisplayFormatter{
-		headerFmt: color.New(color.FgGreen, color.Bold),
-		titleFmt:  color.New(color.FgCyan),
-		urlFmt:    color.New(color.FgBlue, color.Underline),
-		timeFmt:   color.New(color.FgYellow),
+		headerStyle: color.New(color.FgGreen, color.Bold),
+		titleStyle:  color.New(color.FgCyan),
+		urlStyle:    color.New(color.FgBlue, color.Underline),
+		timeStyle:   color.New(color.FgYellow),
 	}
 }
 
-// NewPRChecker creates a new PRChecker instance
+// NewPRChecker initializes a new PRChecker instance
 func NewPRChecker() (*PRChecker, error) {
-	client, err := createAPIClient()
+	client, err := initializeGitHubClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create API client: %w", err)
+		return nil, fmt.Errorf("failed to initialize GitHub client: %w", err)
 	}
 
-	account, err := getAccountName(client)
+	username, err := fetchGitHubUsername(client)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get account name: %w", err)
+		return nil, fmt.Errorf("failed to fetch GitHub username: %w", err)
 	}
 
 	return &PRChecker{
-		client:  client,
-		account: account,
-		display: NewDisplayFormatter(),
+		client:    client,
+		username:  username,
+		formatter: NewDisplayFormatter(),
 	}, nil
 }
 
-// Run executes the main PR checking logic
+// Run executes the main PR checking logic with concurrent requests
 func (pc *PRChecker) Run() error {
-	prTypes := []string{PRTypeCreated, PRTypeRequested}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	for _, prType := range prTypes {
-		if err := pc.processAndDisplayPRs(prType); err != nil {
-			return fmt.Errorf("error processing %s PRs: %w", prType, err)
+	results := make(chan AsyncPRResult, 2)
+	var wg sync.WaitGroup
+
+	for _, category := range []string{categoryCreated, categoryReviewer} {
+		wg.Add(1)
+		go func(cat string) {
+			defer wg.Done()
+			issues, err := pc.fetchPullRequests(ctx, cat)
+			var issuesList []*github.Issue
+			if issues != nil {
+				issuesList = issues.Issues
+			}
+			results <- AsyncPRResult{
+				Issues:   issuesList,
+				Category: cat,
+				Error:    err,
+			}
+		}(category)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		if result.Error != nil {
+			return fmt.Errorf("error fetching %s PRs: %w", result.Category, result.Error)
+		}
+		if err := pc.displayPullRequests(result.Issues, result.Category); err != nil {
+			return err
 		}
 	}
+
 	return nil
 }
 
-func createAPIClient() (APIClient, error) {
+func initializeGitHubClient() (GitHubClient, error) {
 	opts := api.ClientOptions{
 		Headers: map[string]string{
 			"Accept":               githubAcceptHeader,
 			"X-GitHub-Api-Version": githubAPIVersion,
 		},
 	}
-	return api.NewRESTClient(opts)
+
+	client, err := api.NewRESTClient(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &githubRESTClient{client: client}, nil
 }
 
-func getAccountName(client APIClient) (string, error) {
+func fetchGitHubUsername(client GitHubClient) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
 	var user github.User
-	if err := client.Get("user", &user); err != nil {
-		return "", fmt.Errorf("failed to get user info: %w", err)
+	if err := client.Get(ctx, "user", &user); err != nil {
+		return "", fmt.Errorf("failed to fetch user info: %w", err)
 	}
 
 	if user.Login == nil {
-		return "", fmt.Errorf("received empty login name from GitHub")
+		return "", fmt.Errorf("received empty username from GitHub")
 	}
 	return *user.Login, nil
 }
 
-func (pc *PRChecker) processAndDisplayPRs(prType string) error {
-	issues, err := pc.searchIssues(prType)
-	if err != nil {
-		return err
-	}
-	return pc.displayResults(issues.Issues, prType)
-}
-
-func (pc *PRChecker) searchIssues(prType string) (*github.IssuesSearchResult, error) {
-	query, err := pc.buildSearchQuery(prType)
+func (pc *PRChecker) fetchPullRequests(ctx context.Context, category string) (*github.IssuesSearchResult, error) {
+	query, err := pc.buildSearchQuery(category)
 	if err != nil {
 		return nil, err
 	}
 
 	var response github.IssuesSearchResult
-	if err := pc.client.Get("search/issues?q="+query, &response); err != nil {
-		return nil, fmt.Errorf("failed to search issues: %w", err)
+	if err := pc.client.Get(ctx, "search/issues?q="+query, &response); err != nil {
+		return nil, fmt.Errorf("failed to fetch pull requests: %w", err)
 	}
 
 	return &response, nil
 }
 
-func (pc *PRChecker) buildSearchQuery(prType string) (string, error) {
+func (pc *PRChecker) buildSearchQuery(category string) (string, error) {
 	baseQuery := "is:open+is:pr+archived:false"
 
-	switch prType {
-	case PRTypeCreated:
-		return fmt.Sprintf("%s+author:%s", baseQuery, pc.account), nil
-	case PRTypeRequested:
-		return fmt.Sprintf("%s+user-review-requested:%s", baseQuery, pc.account), nil
+	switch category {
+	case categoryCreated:
+		return fmt.Sprintf("%s+author:%s", baseQuery, pc.username), nil
+	case categoryReviewer:
+		return fmt.Sprintf("%s+user-review-requested:%s", baseQuery, pc.username), nil
 	default:
-		return "", fmt.Errorf("unsupported PR type: %s", prType)
+		return "", fmt.Errorf("unsupported PR category: %s", category)
 	}
 }
 
-func (pc *PRChecker) displayResults(issues []*github.Issue, prType string) error {
-	if err := pc.printSectionHeader(prType); err != nil {
+func (pc *PRChecker) displayPullRequests(issues []*github.Issue, category string) error {
+	if err := pc.displaySectionHeader(category); err != nil {
 		return err
 	}
 
@@ -167,9 +216,9 @@ func (pc *PRChecker) displayResults(issues []*github.Issue, prType string) error
 		return nil
 	}
 
-	pc.printTableHeader()
+	pc.displayTableHeader()
 
-	if err := pc.printIssues(issues); err != nil {
+	if err := pc.displayIssues(issues); err != nil {
 		return err
 	}
 
@@ -177,63 +226,63 @@ func (pc *PRChecker) displayResults(issues []*github.Issue, prType string) error
 	return nil
 }
 
-func (pc *PRChecker) printSectionHeader(prType string) error {
+func (pc *PRChecker) displaySectionHeader(category string) error {
 	headerStyle := color.New(color.FgHiMagenta, color.Bold)
-	var icon, text string
+	var icon, description string
 
-	switch prType {
-	case PRTypeCreated:
-		icon, text = createdIcon, "Pull Requests Created by"
-	case PRTypeRequested:
-		icon, text = requestedIcon, "Review Requests for"
+	switch category {
+	case categoryCreated:
+		icon, description = iconCreated, "Pull Requests Created by"
+	case categoryReviewer:
+		icon, description = iconReviewer, "Review Requests for"
 	default:
-		return fmt.Errorf("unsupported PR type: %s", prType)
+		return fmt.Errorf("unsupported PR category: %s", category)
 	}
 
-	headerStyle.Printf("\n%s %s %s\n\n", icon, text, pc.account)
+	headerStyle.Printf("\n%s %s %s\n\n", icon, description, pc.username)
 	return nil
 }
 
-func (pc *PRChecker) printTableHeader() {
-	spacing := strings.Repeat(" ", columnSpacing)
+func (pc *PRChecker) displayTableHeader() {
+	padding := strings.Repeat(" ", columnPadding)
 
-	pc.display.headerFmt.Printf("Title%s", strings.Repeat(" ", titleWidth-len("Title")))
-	pc.display.headerFmt.Printf("%sUpdated%s", spacing, strings.Repeat(" ", updatedWidth-len("Updated")))
-	pc.display.headerFmt.Printf("%sURL\n", spacing)
-	fmt.Println(color.HiBlackString(strings.Repeat("-", lineWidth)))
+	pc.formatter.headerStyle.Printf("Title%s", strings.Repeat(" ", maxTitleLength-len("Title")))
+	pc.formatter.headerStyle.Printf("%sUpdated%s", padding, strings.Repeat(" ", maxUpdateLength-len("Updated")))
+	pc.formatter.headerStyle.Printf("%sURL\n", padding)
+	fmt.Println(color.HiBlackString(strings.Repeat("-", displayWidth)))
 }
 
-func (pc *PRChecker) printIssues(issues []*github.Issue) error {
-	now := time.Now()
-	spacing := strings.Repeat(" ", columnSpacing)
+func (pc *PRChecker) displayIssues(issues []*github.Issue) error {
+	currentTime := time.Now()
+	padding := strings.Repeat(" ", columnPadding)
 
 	for _, issue := range issues {
 		if issue.Title == nil || issue.HTMLURL == nil {
 			return fmt.Errorf("received invalid issue data from GitHub")
 		}
 
-		title := truncateString(*issue.Title, titleWidth)
-		updated := truncateString(text.RelativeTimeAgo(now, issue.UpdatedAt.Time), updatedWidth)
+		title := truncateString(*issue.Title, maxTitleLength)
+		updated := truncateString(text.RelativeTimeAgo(currentTime, issue.UpdatedAt.Time), maxUpdateLength)
 
-		pc.display.titleFmt.Printf("%s", title)
-		pc.display.timeFmt.Printf("%s%s", spacing, updated)
-		pc.display.urlFmt.Printf("%s%s\n", spacing, *issue.HTMLURL)
+		pc.formatter.titleStyle.Printf("%s", title)
+		pc.formatter.timeStyle.Printf("%s%s", padding, updated)
+		pc.formatter.urlStyle.Printf("%s%s\n", padding, *issue.HTMLURL)
 	}
 	return nil
 }
 
-func truncateString(s string, length int) string {
+func truncateString(s string, maxLength int) string {
 	width := runewidth.StringWidth(s)
 
-	if width <= length {
-		return s + strings.Repeat(" ", length-width)
+	if width <= maxLength {
+		return s + strings.Repeat(" ", maxLength-width)
 	}
 
 	width = 0
 	var truncated []rune
 	for _, r := range s {
 		w := runewidth.RuneWidth(r)
-		if width+w+3 > length {
+		if width+w+3 > maxLength {
 			break
 		}
 		width += w
@@ -242,7 +291,7 @@ func truncateString(s string, length int) string {
 
 	result := string(truncated) + "..."
 	resultWidth := runewidth.StringWidth(result)
-	return result + strings.Repeat(" ", length-resultWidth)
+	return result + strings.Repeat(" ", maxLength-resultWidth)
 }
 
 func main() {
