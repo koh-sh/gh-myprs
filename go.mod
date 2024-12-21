@@ -7,7 +7,7 @@ require (
 	github.com/fatih/color v1.18.0
 	github.com/google/go-github/v67 v67.0.0
 	github.com/mattn/go-runewidth v0.0.16
-	github.com/stretchr/testify v1.7.0
+	github.com/stretchr/testify v1.10.0
 )
 
 require (
