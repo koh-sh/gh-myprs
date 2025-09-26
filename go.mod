@@ -8,7 +8,7 @@ require (
 	github.com/cli/go-gh/v2 v2.12.0
 	github.com/fatih/color v1.18.0
 	github.com/google/go-github/v67 v67.0.0
-	github.com/mattn/go-runewidth v0.0.16
+	github.com/mattn/go-runewidth v0.0.17
 	github.com/stretchr/testify v1.10.0
 )
 
