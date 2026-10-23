@@ -1,12 +1,10 @@
 module github.com/koh-sh/gh-myprs
 
-go 1.23.3
-
-toolchain go1.24.1
+go 1.25.0
 
 require (
 	github.com/cli/go-gh/v2 v2.12.0
-	github.com/fatih/color v1.18.0
+	github.com/fatih/color v1.19.0
 	github.com/google/go-github/v67 v67.0.0
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/stretchr/testify v1.10.0
@@ -202,7 +200,7 @@ require (
 	golang.org/x/exp/typeparams v0.0.0-20250210185358-939b2ce775ac // indirect
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
-	golang.org/x/sys v0.31.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.30.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 	golang.org/x/tools v0.31.0 // indirect
